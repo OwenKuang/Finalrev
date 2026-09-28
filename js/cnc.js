@@ -36,6 +36,7 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
   const TOOL_LEN = 1.2; // carve length up the tool axis, part units
   const RES = LOW ? 52 : 68;
   const HALF = RES / 2;
+  const FILL = 1 - 3.2 / HALF; // how much of the grid the stock spans, leaving room for its far faces
   const R2 = RES * RES;
   const MM = 40; // DRO millimetres per world unit
   const RAPID_V = 5.2, A_RAPID = 2.6, C_RAPID = 5.0, A_FEED = 1.8, C_FEED = 5.2;
@@ -71,18 +72,18 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
   controls.enableZoom = false;
   controls.enablePan = false;
   controls.rotateSpeed = 0.55;
-  controls.minPolarAngle = 0.25;
-  controls.maxPolarAngle = 1.48;
+  // look around the part, but not so far that the camera swings into the machine
+  controls.minPolarAngle = 1.0;
+  controls.maxPolarAngle = 1.62;
+  controls.minAzimuthAngle = -0.6;
+  controls.maxAzimuthAngle = 0.6;
   controls.enabled = !coarse;
   canvas.style.touchAction = coarse ? 'pan-y' : 'none';
 
-  const VIEWS = {
-    iso: { pos: new V3(13.2, 10.6, 17.6), target: new V3(0, 4.0, 0) },
-    front: { pos: new V3(0, 7.0, 27), target: new V3(0, 4.9, 0) },
-    top: { pos: new V3(0.01, 26, 5.5), target: new V3(0, 3.0, 0.4) },
-  };
-  camera.position.copy(VIEWS.iso.pos);
-  controls.target.copy(VIEWS.iso.target);
+  // a straight-on view of the part — no auto-orbit; drag to look around, "Reset view" eases back here
+  const HOME = { pos: new V3(0, 8.0, 17.3), target: new V3(0, 3.6, 0) };
+  camera.position.copy(HOME.pos);
+  controls.target.copy(HOME.target);
 
   const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: LOW ? 0 : 4 });
   const composer = new EffectComposer(renderer, rt);
@@ -106,6 +107,9 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
   const fill = new THREE.DirectionalLight(0x9ab8ff, 0.35);
   fill.position.set(-8, 3, 10);
   scene.add(fill);
+  const front = new THREE.DirectionalLight(0xffffff, 0.9); // from the viewer's side, for the straight-on view
+  front.position.set(1.5, 7, 16);
+  scene.add(front);
   const toolLight = new THREE.PointLight(0xc8ff00, 0, 4, 2);
   scene.add(toolLight);
 
@@ -120,7 +124,7 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
     tool: new THREE.MeshStandardMaterial({ color: 0xe4eaed, metalness: 1, roughness: 0.16, map: stripeTexture() }),
     shank: new THREE.MeshStandardMaterial({ color: 0xc9d0d3, metalness: 1, roughness: 0.2 }),
     insert: new THREE.MeshStandardMaterial({ color: 0x3a4044, metalness: 0.9, roughness: 0.3 }),
-    stock: new THREE.MeshStandardMaterial({ color: 0xc6ced2, metalness: 0.9, roughness: 0.3 }),
+    stock: new THREE.MeshStandardMaterial({ color: 0xc6ced2, metalness: 0.55, roughness: 0.36, envMapIntensity: 1.25 }),
     chip: new THREE.MeshStandardMaterial({ color: 0xdbe2e5, metalness: 1, roughness: 0.22 }),
   };
 
@@ -367,7 +371,7 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
   let mcDirty = true;
 
   function setGrid(h) {
-    KX = 0.93 / h.x; KY = 0.93 / h.y; KZ = 0.93 / h.z;
+    KX = FILL / h.x; KY = FILL / h.y; KZ = FILL / h.z;
     for (let i = 0; i < RES; i++) {
       const u = i / HALF - 1;
       PX[i] = u / KX; PY[i] = u / KY; PZ[i] = u / KZ;
@@ -1019,7 +1023,7 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
     status: $('#hud-status'), machine: $('#hud-machine'), opNum: $('#hud-op-num'), opKind: $('#hud-op-kind'), opName: $('#hud-op-name'),
     bar: $('#hud-bar'), pct: $('#hud-pct'), time: $('#hud-time'), parts: $('#hud-parts'),
     x: $('#dro-x'), y: $('#dro-y'), z: $('#dro-z'), a: $('#dro-a'), c: $('#dro-c'), s: $('#dro-s'),
-    gcode: $('#gcode'), msg: $('#hud-msg'),
+    msg: $('#hud-msg'),
   };
   let msgTimer = 0;
   function msg(text, ok = false) {
@@ -1047,7 +1051,6 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
     else if (drillBusy) s = 'DRILLING';
     H.status.textContent = s;
     hud.classList.toggle('paused', !running || jog);
-    $('#btn-run').setAttribute('aria-label', running ? 'Pause simulation' : 'Run simulation');
   }
   let hudT = 0;
   function updateHUD(dt) {
@@ -1067,117 +1070,23 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
     const sec = Math.floor(cycleT);
     H.time.textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
     H.parts.textContent = String(parts).padStart(3, '0');
-    if (gDirty) {
-      gDirty = false;
-      H.gcode.innerHTML = gLog.map((l, i) => `<li class="${l.cls === 'cmt' ? 'cmt' : i === gLog.length - 1 ? 'cur' : ''}">${l.t}</li>`).join('');
-    }
   }
 
-  // controls
-  const btnRun = $('#btn-run');
-  btnRun.addEventListener('click', () => {
-    if (jog) setJog(false);
-    running = !running;
-    if (running && phase === 'run' && pc >= program.length) restartProgram();
-    setStatus();
-  });
-  $('#btn-reset').addEventListener('click', () => {
-    if (jog) setJog(false, true);
-    resetStock();
-    restartProgram();
-    running = true;
-    setStatus();
-    msg('Fresh stock loaded.', true);
-  });
-  $$('[data-speed]').forEach((b) => b.addEventListener('click', () => {
-    speed = +b.dataset.speed;
-    $$('[data-speed]').forEach((x) => x.classList.toggle('on', x === b));
-  }));
-  let showPath = true;
-  const btnPath = $('#btn-path');
-  btnPath.addEventListener('click', () => {
-    showPath = !showPath;
-    btnPath.classList.toggle('on', showPath);
-    btnPath.setAttribute('aria-pressed', showPath);
-    opLines.forEach((l, j) => { l.done.visible = l.todo.visible = showPath && j === curOp; });
-  });
+  const showPath = true;
   $$('[data-machine]').forEach((b) => b.addEventListener('click', () => setMachine(b.dataset.machine)));
 
-  // jog
-  const jogPanel = $('#jog-panel');
-  const btnJog = $('#btn-jog');
-  const sliders = $$('#jog-panel input');
-  const toUI = { x: () => st.x * MM, y: () => -st.z * MM, z: () => (st.y - z0()) * MM, a: () => deg(st.a), c: () => deg(st.c) };
-  const fromUI = {
-    x: (v) => clamp(v / MM, -3, 3), y: (v) => clamp(-v / MM, -2.2, 2.2), z: (v) => clamp(v / MM + z0(), mach.ymin, 5.2),
-    a: (v) => clamp(rad(v), rad(-110), rad(110)), c: (v) => clamp(rad(v), -TAU, TAU),
-  };
-  const keyOf = { x: 'x', y: 'z', z: 'y', a: 'a', c: 'c' };
-  function syncSliders() {
-    for (const s of sliders) {
-      const ax = s.dataset.axis;
-      s.value = toUI[ax]().toFixed(1);
-      s.nextElementSibling.textContent = (+s.value).toFixed(ax === 'a' || ax === 'c' ? 0 : 1);
-    }
-  }
-  sliders.forEach((s) => s.addEventListener('input', () => {
-    if (!jog) return;
-    const ax = s.dataset.axis;
-    jogTarget[keyOf[ax]] = fromUI[ax](+s.value);
-    s.nextElementSibling.textContent = (+s.value).toFixed(ax === 'a' || ax === 'c' ? 0 : 1);
-  }));
-  let jogCOff = 0;
-  function setJog(on, silent = false) {
-    if (on === jog) return;
-    if (on && (drillBusy || phase !== 'run' || interrupt.length || (seg && seg.src === 'int'))) return msg('Wait for the current move to finish.');
-    jog = on;
-    btnJog.classList.toggle('on', on);
-    btnJog.setAttribute('aria-pressed', on);
-    jogPanel.hidden = !on;
-    H.gcode.hidden = on;
-    if (on) {
-      if (seg && seg.src === 'prog') pc--;
-      seg = null;
-      setTool('mill');
-      jogCOff = st.c - wrapPi(st.c);
-      st.c -= jogCOff;
-      jogResume = { x: st.x, y: st.y, z: st.z, a: st.a, c: st.c, mode: 'rapid' };
-      jogTarget = { ...st };
-      syncSliders();
-      msg('JOG mode — drag the sliders. Plunge into the stock to cut by hand.', true);
-    } else {
-      jogTarget = null;
-      if (!silent) {
-        const tr = transition(st, jogResume);
-        const off = jogCOff;
-        tr.at(-1).onArrive = () => { st.c += off; setTool(ops[curOp]?.tool || 'mill'); };
-        interrupt.push(...tr);
-        running = true;
-        msg('Resuming program.', true);
-      }
-    }
-    setStatus();
-  }
-  btnJog.addEventListener('click', () => setJog(!jog));
-
-  // camera views
-  let view = 'iso';
+  // camera: drag to look around; "Reset view" eases back to the straight-on view
   let tween = null;
-  let lastInteract = performance.now();
   let dragging = false;
-  function setView(v) {
-    view = v;
-    $$('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
-    const tip = new V3(st.x, st.y, st.z);
-    const toTarget = v === 'tool' ? tip.clone() : VIEWS[v].target.clone();
-    const toPos = v === 'tool' ? tip.clone().add(new V3(3.4, 2.6, 5.4)) : VIEWS[v].pos.clone();
-    if (aspect < 1 && v !== 'tool') toPos.sub(toTarget).multiplyScalar(1.1).add(toTarget);
+  function resetView() {
+    const toPos = HOME.pos.clone(), toTarget = HOME.target.clone();
+    if (aspect < 1) toPos.sub(toTarget).multiplyScalar(1.1).add(toTarget);
     tween = { t: 0, fromPos: camera.position.clone(), fromTarget: controls.target.clone(), toPos, toTarget };
-    lastInteract = performance.now();
+    kick();
   }
-  $$('[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
-  controls.addEventListener('start', () => { tween = null; lastInteract = performance.now(); dragging = true; });
-  controls.addEventListener('end', () => { lastInteract = performance.now(); dragging = false; });
+  $('#btn-view-reset')?.addEventListener('click', resetView);
+  controls.addEventListener('start', () => { tween = null; dragging = true; });
+  controls.addEventListener('end', () => { dragging = false; });
 
   // ------------------------------------------------------------------ pointer: hover + click to drill
   const raycaster = new THREE.Raycaster();
@@ -1279,7 +1188,6 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
     });
     H.machine.textContent = mach.label;
     $$('[data-dro]').forEach((el) => el.classList.toggle('na', !mach.axes.includes(el.dataset.dro)));
-    $$('[data-jog]').forEach((el) => { el.hidden = !mach.axes.includes(el.dataset.jog); });
     if (labelEls.C) labelEls.C.lastChild.textContent = mach.id === 'mt' ? 'lathe' : 'rotary';
     anchors = anchorsFor();
   }
@@ -1287,7 +1195,6 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
   function setMachine(id, { silent = false } = {}) {
     const m = MACHINES[id];
     if (!m || (m === mach && ops.length)) return;
-    if (jog) setJog(false, true);
     mach = m;
     seg = null;
     interrupt.length = 0;
@@ -1423,21 +1330,11 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
 
     // camera
     if (tween) {
-      tween.t = Math.min(1, tween.t + dt / 1.1);
+      tween.t = Math.min(1, tween.t + dt / 0.9);
       const k = smooth(tween.t);
       camera.position.lerpVectors(tween.fromPos, tween.toPos, k);
       controls.target.lerpVectors(tween.fromTarget, tween.toTarget, k);
       if (tween.t >= 1) tween = null;
-    } else if (view === 'tool') {
-      const d = _w1.set(st.x, st.y, st.z).sub(controls.target).multiplyScalar(1 - Math.exp(-dt * 5));
-      controls.target.add(d);
-      camera.position.add(d);
-    } else if (!dragging && !reduceMotion && view === 'iso' && now - lastInteract > 5000) {
-      const off = camera.position.clone().sub(controls.target);
-      const sph = new THREE.Spherical().setFromVector3(off);
-      const base = Math.atan2(VIEWS.iso.pos.x, VIEWS.iso.pos.z);
-      sph.theta = lerp(sph.theta, base + Math.sin(elapsed * 0.09) * 0.42, 1 - Math.exp(-dt * 0.6));
-      camera.position.copy(controls.target).add(off.setFromSpherical(sph));
     }
     controls.update();
     marker.visible = !!hover && !dragging;
@@ -1448,8 +1345,8 @@ export function initCNC({ machine: initialMachine = '5x' } = {}) {
   }
 
   setMachine(MACHINES[initialMachine] ? initialMachine : '5x', { silent: true });
-  if (reduceMotion) msg('Paused (reduced motion). Press ▶ to run.', true);
+  if (reduceMotion) msg('Paused for reduced motion. Click the part to drill.', true);
   kick();
 
-  return { setMachine, setView };
+  return { setMachine, resetView };
 }

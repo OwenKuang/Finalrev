@@ -120,12 +120,11 @@ function createPreview(canvas) {
   const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
   const group = new THREE.Group();
   scene.add(group);
-  const isLight = () => document.documentElement.dataset.theme === 'light';
   let grid = null;
   function buildGrid() {
     const y = grid ? grid.position.y : 0;
     if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
-    grid = isLight() ? new THREE.GridHelper(5, 20, 0xb3b9b1, 0xd3d7cf) : new THREE.GridHelper(5, 20, 0x3a423c, 0x222824);
+    grid = new THREE.GridHelper(5, 20, 0x3a423c, 0x222824); // dark viewport in both themes, so the lime box always reads
     grid.position.y = y;
     scene.add(grid);
   }
@@ -176,14 +175,9 @@ function createPreview(canvas) {
     renderer.render(scene, camera);
   }
 
-  document.addEventListener('themechange', () => {
-    buildGrid();
-    if (lastData) setData(lastData);
-  });
-
   function setData(d) {
     lastData = d;
-    boxMat.color.set(isLight() ? 0x4f6e00 : 0xc8ff00);
+    boxMat.color.set(0xc8ff00);
     if (points) { group.remove(points); points.geometry.dispose(); }
     if (boxLines) { group.remove(boxLines); boxLines.geometry.dispose(); }
     const src = d.points;
@@ -193,7 +187,7 @@ function createPreview(canvas) {
     const pos = new Float32Array(cnt * 3), col = new Float32Array(cnt * 3);
     const cx = (d.min[0] + d.max[0]) / 2, cy = (d.min[1] + d.max[1]) / 2, cz = (d.min[2] + d.max[2]) / 2;
     const s = 2 / Math.max(d.dims[0], d.dims[1], d.dims[2], 1e-6);
-    const lo = new THREE.Color(isLight() ? 0x9aa19b : 0x6f7872), hi = new THREE.Color(isLight() ? 0x101210 : 0xf2f4ef), c = new THREE.Color();
+    const lo = new THREE.Color(0x6f7872), hi = new THREE.Color(0xf2f4ef), c = new THREE.Color();
     for (let i = 0, j = 0; j < cnt; i += stride, j++) {
       // STEP is Z-up; the preview is Y-up
       pos[j * 3] = (src[i * 3] - cx) * s;
@@ -323,6 +317,13 @@ function createPanel(panel, toast) {
   dz.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; dz.classList.remove('over'); } });
   dz.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); depth = 0; dz.classList.remove('over'); handle([...e.dataTransfer.files]); });
   input.addEventListener('change', () => { handle([...input.files]); input.value = ''; });
+  // picking a machine card the part fits sets the process, same as the selector above the drop zone
+  q('fit').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-fit]');
+    if (!b || b.disabled) return;
+    const r = panel.querySelector(`[data-process][value="${b.dataset.fit}"]`);
+    if (r && !r.checked) { r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); }
+  });
   q('sample').addEventListener('click', () => {
     // clicking again re-selects the sample instead of stacking copies (which would grow the panel)
     const loaded = entries.find((x) => x.sample);
@@ -464,7 +465,8 @@ function createPanel(panel, toast) {
       const isRec = a.rec === env.key;
       const isPick = pick === env.key;
       const tag = isPick ? '<span class="fit-tag">Your pick</span>' : isRec ? '<span class="fit-tag">Best fit</span>' : '';
-      return `<div class="fit ${ok ? 'ok' : 'no'} ${isRec ? 'rec' : ''} ${isPick ? 'pick' : ''}">${tag}<b><i>${ok ? '✓' : '×'}</i>${env.name}</b><small>${env.spec}</small></div>`;
+      const label = ok ? `Quote on ${env.name}` : `This part is outside the ${env.name} size`;
+      return `<button type="button" class="fit ${ok ? 'ok' : 'no'} ${isRec ? 'rec' : ''} ${isPick ? 'pick' : ''}" data-fit="${env.key}" aria-pressed="${isPick}" title="${label}"${ok ? '' : ' disabled'}>${tag}<b><i>${ok ? '✓' : '×'}</i>${env.name}</b><small>${env.spec}</small></button>`;
     }).join('') + `<p class="fit-note ${warn ? 'warn' : ''}">${note}</p>`;
     dims.textContent = `${x.toFixed(1)} × ${y.toFixed(1)} × ${z.toFixed(1)} mm`;
     try {

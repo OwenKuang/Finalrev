@@ -1,5 +1,5 @@
 // finalREV redesign — page wiring: nav, theme, quote buttons, hero video, videos rail, simulator.
-import { initUpload, openQuote } from './upload.js?v=6';
+import { initUpload, openQuote } from './upload.js?v=13';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -61,23 +61,84 @@ menu.addEventListener('click', (e) => {
   sysLight.addEventListener('change', (e) => { if (!stored()) apply(e.matches ? 'light' : 'dark', { animate: true }); });
 }
 
-// ---------------------------------------------------------------- nav: sliding carriage under the links
+// ---------------------------------------------------------------- nav: a line under the link for the section in view, plus the "Company" dropdown
 {
   const nav = $('#nav');
   const links = $('#nav-links');
-  const car = $('#nav-carriage');
-  const items = $$('a', links);
-  const home = items.find((a) => a.hasAttribute('aria-current')) || items[0];
-  const moveTo = (a) => {
-    const lr = links.getBoundingClientRect(), r = a.getBoundingClientRect();
-    car.style.width = `${Math.max(16, r.width - 36)}px`;
-    car.style.transform = `translateX(${r.left - lr.left + 18}px)`;
+  const line = $('#nav-ind');
+  const drop = $('#nav-drop');
+  const dropBtn = $('.nav-drop-btn', drop);
+  const items = [...$$(':scope > a', links), dropBtn];
+  const spy = $$('[data-spy]', links);
+  let current = spy[0];
+
+  // the line slides to whatever link you point at, and back to the current section's link when you leave
+  const moveTo = (el) => {
+    const lr = links.getBoundingClientRect(), r = el.getBoundingClientRect();
+    line.style.width = `${Math.max(12, r.width - 28)}px`;
+    line.style.transform = `translateX(${r.left - lr.left + 14}px)`;
   };
-  items.forEach((a) => { a.addEventListener('mouseenter', () => moveTo(a)); a.addEventListener('focus', () => moveTo(a)); });
-  links.addEventListener('mouseleave', () => moveTo(home));
-  links.addEventListener('focusout', () => moveTo(home));
-  new ResizeObserver(() => moveTo(home)).observe(links);
-  document.fonts?.ready.then(() => moveTo(home));
+  const rest = () => moveTo(current);
+  items.forEach((el) => el.addEventListener('mouseenter', () => moveTo(el)));
+  links.addEventListener('mouseleave', rest);
+  new ResizeObserver(rest).observe(links);
+  document.fonts?.ready.then(rest);
+
+  const setCurrent = (a) => {
+    if (!a || a === current) return;
+    current.removeAttribute('aria-current');
+    current = a;
+    current.setAttribute('aria-current', 'true');
+    if (!links.matches(':hover')) rest();
+  };
+
+  // the last section whose top has passed the upper-middle of the screen is "current"
+  const byId = new Map(spy.map((a) => [a.dataset.spy, a]));
+  const secs = [...$$('.hero'), ...[...byId.keys()].map((id) => document.getElementById(id)).filter((el) => el && !el.classList.contains('hero'))]
+    .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+  let spyQueued = false;
+  let lock = null;
+  const spyUpdate = () => {
+    spyQueued = false;
+    if (lock) return;
+    const mid = innerHeight * 0.45;
+    let pick = secs[0];
+    for (const sec of secs) if (!sec.hidden && sec.getBoundingClientRect().top <= mid) pick = sec;
+    setCurrent(byId.get(pick.classList.contains('hero') ? 'top' : pick.id));
+  };
+  // clicking a link moves the line straight there; the sections the page scrolls past on the way don't claim it.
+  // The lock lifts once the page arrives (or stops scrolling), or as soon as you scroll yourself.
+  let idle = 0;
+  const release = () => { clearTimeout(idle); lock = null; spyUpdate(); };
+  const arrived = () => {
+    const sec = lock && document.getElementById(lock.dataset.spy);
+    return !sec || sec.getBoundingClientRect().top <= innerHeight * 0.45;
+  };
+  links.addEventListener('click', (e) => {
+    const a = e.target.closest('a[data-spy]');
+    if (!a) return;
+    lock = a;
+    setCurrent(a);
+    rest();
+    clearTimeout(idle);
+    idle = setTimeout(release, 600); // in case the page doesn't need to scroll at all
+  });
+  addEventListener('scroll', () => {
+    if (lock) { clearTimeout(idle); idle = setTimeout(release, 200); return; }
+    if (!spyQueued) { spyQueued = true; requestAnimationFrame(spyUpdate); }
+  }, { passive: true });
+  addEventListener('scrollend', () => { if (lock && arrived()) release(); });
+  for (const t of ['wheel', 'touchstart', 'keydown']) addEventListener(t, () => { if (lock) release(); }, { passive: true });
+  addEventListener('resize', spyUpdate);
+  spyUpdate();
+
+  // "Company" opens on hover (CSS); a click toggles it for touch, and Escape or a click elsewhere closes it
+  const setDrop = (open) => { drop.classList.toggle('open', open); dropBtn.setAttribute('aria-expanded', open); };
+  dropBtn.addEventListener('click', () => setDrop(!drop.classList.contains('open')));
+  drop.addEventListener('mouseleave', () => setDrop(false));
+  drop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setDrop(false); dropBtn.focus(); } });
+  document.addEventListener('click', (e) => { if (!drop.contains(e.target)) setDrop(false); });
+
   const onScroll = () => nav.classList.toggle('scrolled', scrollY > 8);
   addEventListener('scroll', onScroll, { passive: true });
   onScroll();
@@ -123,6 +184,97 @@ document.addEventListener('click', (e) => {
   openQuote({ service: b.dataset.quote || null, pick: b.hasAttribute('data-pick') });
 });
 
+// ---------------------------------------------------------------- capabilities: quote in place
+// "Upload CAD for a … quote" stacks the three cards into a deck (the chosen one in front, a ledge of the others
+// showing behind it) and slides an uploader in beside them. Clicking a ledge brings that card forward.
+{
+  const caps = $('#capabilities');
+  const deck = $('#cap-deck');
+  const cards = $$('.cap', deck);
+  const box = $('#cap-quote');
+  const ease = 'cubic-bezier(.2, .8, .2, 1)';
+  let front = null;
+  let busy = false;
+
+  // FLIP: remember where every card is, change the layout, then glide each card from its old spot to its new one
+  function flip(change) {
+    const first = new Map(cards.map((c) => [c, c.getBoundingClientRect()]));
+    change();
+    for (const c of cards) {
+      const a = first.get(c), b = c.getBoundingClientRect();
+      if (!a.width || !b.width) continue;
+      const dx = a.left - b.left, dy = a.top - b.top, sx = a.width / b.width, sy = a.height / b.height;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(sx - 1) < 0.003 && Math.abs(sy - 1) < 0.003) continue;
+      c.animate([
+        { transformOrigin: '0 0', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+        { transformOrigin: '0 0', transform: 'none' },
+      ], { duration: reduceMotion ? 0 : 640, easing: ease });
+    }
+  }
+  const setService = (id) => {
+    const r = $(`[data-process][value="${id}"]`, box);
+    if (r && !r.checked) { r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); }
+  };
+  function bringForward(card) {
+    if (card === front) return;
+    flip(() => {
+      front = card;
+      [card, ...cards.filter((c) => c !== card)].forEach((c, i) => { c.dataset.pos = i; });
+    });
+  }
+  function open(id) {
+    const card = cards.find((c) => c.dataset.cap === id);
+    if (!card || busy) return;
+    const opening = !caps.classList.contains('quoting');
+    if (opening) {
+      flip(() => {
+        front = card;
+        [card, ...cards.filter((c) => c !== card)].forEach((c, i) => { c.dataset.pos = i; });
+        caps.classList.add('quoting');
+        box.hidden = false;
+      });
+      box.animate([{ opacity: 0, transform: 'translateX(32px)' }, { opacity: 1, transform: 'none' }],
+        { duration: reduceMotion ? 0 : 560, delay: reduceMotion ? 0 : 180, easing: ease, fill: 'backwards' });
+      const grid = $('.cap-grid', caps);
+      const top = grid.getBoundingClientRect().top;
+      if (top < 60 || top > innerHeight * 0.5) grid.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    } else {
+      bringForward(card);
+    }
+    setService(id);
+  }
+  function close() {
+    if (busy || !caps.classList.contains('quoting')) return;
+    busy = true;
+    const done = () => {
+      flip(() => {
+        caps.classList.remove('quoting');
+        box.hidden = true;
+        cards.forEach((c) => { delete c.dataset.pos; });
+        front = null;
+      });
+      busy = false;
+    };
+    if (reduceMotion) return done();
+    box.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateX(24px)' }], { duration: 200, easing: 'ease-in' }).finished.then(done, done);
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cap-quote]');
+    if (b) { e.preventDefault(); open(b.dataset.capQuote); }
+  });
+  deck.addEventListener('click', (e) => {
+    const c = e.target.closest('.cap');
+    if (c && caps.classList.contains('quoting') && c !== front) { e.preventDefault(); open(c.dataset.cap); }
+  });
+  $('#cap-back').addEventListener('click', close);
+  // picking a machine in the uploader brings its card to the front of the deck too
+  box.addEventListener('change', (e) => {
+    const r = e.target.closest('[data-process]');
+    const card = r && cards.find((c) => c.dataset.cap === r.value);
+    if (card && caps.classList.contains('quoting')) bringForward(card);
+  });
+}
+
 // ---------------------------------------------------------------- reveal on scroll
 {
   const io = new IntersectionObserver((entries) => {
@@ -155,14 +307,6 @@ const SHORTS = [
 const thumb = (v) => `https://i.ytimg.com/vi/${v.id}/${v.tall ? 'oar2.jpg' : 'maxresdefault.jpg'}`;
 const embed = (id) => `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&playsinline=1&modestbranding=1`;
 
-// featured launch film plays inline
-{
-  const fp = $('#feature-player');
-  fp.addEventListener('click', () => {
-    fp.parentElement.innerHTML = `<iframe src="${embed(fp.dataset.yt)}" title="finalREV launch video" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
-  });
-}
-
 // YouTube's iframe API, fetched on the first play: it reports when a short ends, so its card can shrink back
 let ytApi = null;
 function loadYT() {
@@ -185,7 +329,6 @@ function loadYT() {
 {
   const rail = $('#shorts-rail');
   const track = $('#shorts-track');
-  const hint = $('#rail-hint');
   const fine = matchMedia('(hover: hover) and (pointer: fine)').matches;
   const N = SHORTS.length;
   const card = (v, i, clone) => `
@@ -193,7 +336,6 @@ function loadYT() {
       <div class="s-frame">
         <button class="s-btn" type="button"${clone ? ' tabindex="-1"' : ''} aria-label="Play: ${v.title}">
           <img alt="" width="1080" height="1920" />
-          <span class="s-badge">SHORT</span>
           <span class="s-play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></span>
           <span class="s-meta"><span class="s-num">${String(i + 1).padStart(2, '0')}</span><span class="s-title">${v.title}</span></span>
         </button>
@@ -216,11 +358,19 @@ function loadYT() {
     probe.src = thumb(v);
   }), '900px');
 
-  if (!fine) {
-    rail.classList.add('native');
-    hint.textContent = 'Swipe to scroll';
-  }
-  const HINT = hint.textContent;
+  if (!fine) rail.classList.add('native');
+  const entrance = new IntersectionObserver(([e]) => {
+    if (!e.isIntersecting) return;
+    entrance.disconnect();
+    const box = rail.getBoundingClientRect();
+    cards
+      .map((c) => [c, c.getBoundingClientRect()])
+      .filter(([, r]) => r.right > box.left && r.left < box.right)
+      .sort((a, b) => a[1].left - b[1].left)
+      .forEach(([c], i) => c.style.setProperty('--stagger', `${i * 80}ms`));
+    rail.classList.add('in');
+  }, { threshold: 0.25 });
+  entrance.observe(rail);
 
   // ---- inline player
   let playing = null;            // { card, host, close, player }
@@ -248,7 +398,6 @@ function loadYT() {
     el.classList.remove('settling');
     el.classList.add('playing');
     rail.classList.add('playing');
-    hint.textContent = fine ? 'Playing · close it to keep scrolling' : 'Playing · swipe on to stop';
     center(el);
     loadYT().then((YT) => {
       if (playing !== p) return;
@@ -278,7 +427,6 @@ function loadYT() {
     if (el.contains(document.activeElement)) $('.s-btn', el).focus({ preventScroll: true });
     el.classList.remove('playing');
     rail.classList.remove('playing');
-    hint.textContent = HINT;
     host.classList.remove('ready');
     const teardown = () => { try { player?.destroy(); } catch {} host.remove(); close.remove(); };
     if (instant) { teardown(); return; }
@@ -293,8 +441,13 @@ function loadYT() {
 
   track.addEventListener('click', (e) => {
     const b = e.target.closest('.s-btn');
-    if (b) play(b.closest('.short'));
+    if (!b) return;
+    const card = b.closest('.short');
+    if (playing && playing.card !== card) return stop(); // a click beside the open short just closes it
+    play(card);
   });
+  // clicking anywhere outside the playing short (or pressing Escape) closes it
+  document.addEventListener('click', (e) => { if (playing && !playing.card.contains(e.target)) stop(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') stop(); });
   new IntersectionObserver(([e]) => { if (!e.isIntersecting) stop({ instant: true }); }).observe(rail);
 
@@ -322,13 +475,15 @@ function loadYT() {
     }
     new ResizeObserver(measure).observe(rail);
     measure();
+    let onArrow = false;
     rail.addEventListener('pointermove', (e) => {
+      onArrow = !!e.target.closest('.rail-btn');
       const r = rail.getBoundingClientRect();
       pointer = (e.clientX - r.left) / r.width;
       const y = e.clientY - r.top - trackTop;
       pointerIn = y >= 0 && y <= trackH;
     });
-    rail.addEventListener('pointerleave', () => { pointer = null; });
+    rail.addEventListener('pointerleave', () => { pointer = null; onArrow = false; });
     rail.addEventListener('wheel', (e) => {
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return; // leave vertical page scrolling alone
       e.preventDefault();
@@ -373,8 +528,8 @@ function loadYT() {
         v = 0;
         if (glide.t >= 1) glide = null;
       } else {
-        let vt = busy || focusHold ? 0 : AUTO;
-        if (pointer != null && !busy) {
+        let vt = busy || focusHold || onArrow ? 0 : AUTO;
+        if (pointer != null && !busy && !onArrow) {
           const u = (pointer - 0.5) * 2;
           const m = Math.max(0, Math.abs(u) - DEAD) / (1 - DEAD);
           vt = Math.sign(u) * Math.pow(m, 1.6) * VMAX;
@@ -395,7 +550,7 @@ function loadYT() {
       }
       // hover highlight: only once the strip has (nearly) stopped, so cards sliding under a resting mouse don't flash
       let want = null;
-      if (!playing && !glide && pointer != null && pointerIn && Math.abs(v) < (hot ? 160 : 70)) {
+      if (!playing && !glide && !onArrow && pointer != null && pointerIn && Math.abs(v) < (hot ? 160 : 70)) {
         const px = x + pointer * railW;
         const k = Math.floor(px / step);
         if (px - k * step <= cardW) want = cards[k] || null;
@@ -418,7 +573,7 @@ let simApi = null;
 let simLoading = null;
 let simMachine = '5x';
 function loadSim() {
-  simLoading ||= import('./cnc.js?v=6')
+  simLoading ||= import('./cnc.js?v=17')
     .then((m) => { simApi = m.initCNC({ machine: simMachine }); })
     .catch((err) => { console.error(err); $('#stage-fallback').hidden = false; });
   return simLoading;
