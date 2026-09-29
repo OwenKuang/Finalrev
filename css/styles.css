@@ -764,6 +764,7 @@ button.fit:disabled { cursor: not-allowed; }
    FAQ / CTA / FOOTER
    ========================================================== */
 .faq-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: clamp(40px, 6vw, 96px); align-items: start; }
+.faq-intro h2 { font-size: clamp(30px, 2.9vw, 42px); max-width: none; white-space: nowrap; color: var(--accent); }
 .faq-intro .lede { margin: 20px 0 28px; }
 .faq-list { border-top: 1px solid var(--line-2); }
 .faq-list details { border-bottom: 1px solid var(--line-2); }
@@ -771,7 +772,7 @@ button.fit:disabled { cursor: not-allowed; }
 .faq-list summary::-webkit-details-marker { display: none; }
 .faq-list summary:hover { color: var(--text-2); }
 .faq-list summary i { position: relative; flex: none; width: 28px; height: 28px; border: 1px solid var(--line-3); }
-.faq-list summary i::before, .faq-list summary i::after { content: ""; position: absolute; left: 50%; top: 50%; width: 11px; height: 1.5px; margin: -.75px 0 0 -5.5px; background: var(--text); transition: transform .2s var(--ease); }
+.faq-list summary i::before, .faq-list summary i::after { content: ""; position: absolute; left: 50%; top: 50%; width: 11px; height: 1.5px; margin: -.75px 0 0 -5.5px; background: var(--accent); transition: transform .2s var(--ease); }
 .faq-list summary i::after { transform: rotate(90deg); }
 .faq-list details[open] summary i::after { transform: rotate(0); }
 .faq-list .ans { padding: 0 48px 24px 0; color: var(--text-2); font-size: 16px; }
